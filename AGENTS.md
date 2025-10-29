@@ -282,7 +282,7 @@ async function main(){
 
     document.getElementById('out').textContent = JSON.stringify(payload, null, 2);
 
-    // Envio (opcional):
+    // Envio (resolver da forma correta):
     // await fetch(WEBAPP_URL, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
   });
 }
