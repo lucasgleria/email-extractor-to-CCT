@@ -17,8 +17,11 @@
         <h1>Email Screenshot Extractor</h1>
 
         <div class="upload-section">
-            <h2>1. Upload Image</h2>
+            <h2>1. Upload or Paste Image</h2>
             <input type="file" id="image-upload" accept="image/*">
+            <div id="paste-area" style="border: 2px dashed #ccc; padding: 20px; text-align: center; margin-top: 10px; cursor: pointer;">
+                <p>Or paste image here (Ctrl+V)</p>
+            </div>
         </div>
 
         <div class="results-section">
@@ -164,10 +167,9 @@
             return text;
         }
 
-        extractBtn.addEventListener('click', async () => {
-            const file = imageUpload.files[0];
+        async function handleFile(file) {
             if (!file) {
-                log('Please select an image file first.');
+                log('No file to process.');
                 return;
             }
 
@@ -195,6 +197,26 @@
             } catch (error) {
                 log('An error occurred: ' + error.message);
                 console.error(error);
+            }
+        }
+
+        extractBtn.addEventListener('click', async () => {
+            const file = imageUpload.files[0];
+            if (!file) {
+                log('Please select an image file first.');
+                return;
+            }
+            handleFile(file);
+        });
+
+        window.addEventListener('paste', e => {
+            const items = (e.clipboardData || e.originalEvent.clipboardData).items;
+            for (const item of items) {
+                if (item.kind === 'file') {
+                    const blob = item.getAsFile();
+                    handleFile(blob);
+                    break;
+                }
             }
         });
 
