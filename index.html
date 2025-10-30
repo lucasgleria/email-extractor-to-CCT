@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Email Screenshot Extractor</title>
+    <style>
+        body { font-family: sans-serif; margin: 2em; }
+        .container { max-width: 800px; margin: 0 auto; }
+        .upload-section, .results-section, .actions-section { margin-bottom: 2em; }
+        #results-form input { width: 100%; padding: 8px; margin-bottom: 10px; }
+        #log { background-color: #f4f4f4; border: 1px solid #ddd; padding: 10px; height: 200px; overflow-y: scroll; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Email Screenshot Extractor</h1>
+
+        <div class="upload-section">
+            <h2>1. Upload Image</h2>
+            <input type="file" id="image-upload" accept="image/*">
+        </div>
+
+        <div class="results-section">
+            <h2>2. Extracted Data</h2>
+            <form id="results-form">
+                <label for="REFERENCIA">REFERENCIA:</label>
+                <input type="text" id="REFERENCIA" name="REFERENCIA">
+
+                <label for="MAWB">MAWB:</label>
+                <input type="text" id="MAWB" name="MAWB">
+
+                <label for="HAWB">HAWB:</label>
+                <input type="text" id="HAWB" name="HAWB">
+
+                <label for="DESTINO">DESTINO:</label>
+                <input type="text" id="DESTINO" name="DESTINO">
+
+                <label for="DESTINO_FINAL">DESTINO FINAL:</label>
+                <input type="text" id="DESTINO_FINAL" name="DESTINO_FINAL">
+
+                <label for="CONSIGNEE">CONSIGNEE:</label>
+                <input type="text" id="CONSIGNEE" name="CONSIGNEE">
+            </form>
+        </div>
+
+        <div class="actions-section">
+            <h2>3. Actions</h2>
+            <button id="extract-btn">Extract Data</button>
+            <button id="submit-btn">Confirm & Submit</button>
+            <button id="export-btn">Export Training Data</button>
+            <input type="file" id="import-btn" accept=".json" style="display:none">
+            <button id="import-label-btn">Import Training Data</button>
+        </div>
+
+        <div>
+            <h2>Log</h2>
+            <pre id="log">Awaiting image upload...</pre>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/tesseract.js@5/dist/tesseract.min.js"></script>
+    <script>
+        const imageUpload = document.getElementById('image-upload');
+        const extractBtn = document.getElementById('extract-btn');
+        const submitBtn = document.getElementById('submit-btn');
+        const exportBtn = document.getElementById('export-btn');
+        const importBtn = document.getElementById('import-btn');
+        const importLabelBtn = document.getElementById('import-label-btn');
+        const logEl = document.getElementById('log');
+        let db;
+        let rawText;
+        let webAppUrl;
+        let customModel;
+
+        // Load config
+        fetch('model.json')
+            .then(response => response.json())
+            .then(model => {
+                customModel = model;
+                log('Custom model loaded.');
+            })
+            .catch(error => {
+                log('No custom model found. Using rule-based extraction only.');
+            });
+
+        // Load config
+        fetch('config.json')
+            .then(response => response.json())
+            .then(config => {
+                webAppUrl = config.WEBAPP_URL;
+            });
+
+        // Initialize IndexedDB
+        const request = indexedDB.open('trainingData', 1);
+
+        request.onerror = (event) => {
+            console.error('Database error:', event.target.errorCode);
+        };
+
+        request.onupgradeneeded = (event) => {
+            db = event.target.result;
+            db.createObjectStore('extractions', { autoIncrement: true });
+        };
+
+        request.onsuccess = (event) => {
+            db = event.target.result;
+        };
+
+        function log(message) {
+            console.log(message);
+            logEl.innerHTML = message;
+        }
+
+        async function preprocessImage(file) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = (event) => {
+                    const img = new Image();
+                    img.onload = () => {
+                        const canvas = document.createElement('canvas');
+                        const ctx = canvas.getContext('2d');
+
+                        // Resize logic from AGENTS.md
+                        let { width, height } = img;
+                        const maxHeight = 2200;
+                        const minHeight = 1600;
+
+                        if (height > 3000) {
+                            const scale = maxHeight / height;
+                            width *= scale;
+                            height *= scale;
+                        } else if (height < 1200) {
+                            const scale = minHeight / height;
+                            width *= scale;
+                            height *= scale;
+                        }
+
+                        canvas.width = width;
+                        canvas.height = height;
+
+                        // Apply filters
+                        ctx.filter = 'contrast(1.2) brightness(1.05) grayscale(1)';
+                        ctx.drawImage(img, 0, 0, width, height);
+
+                        canvas.toBlob(resolve, 'image/png');
+                    };
+                    img.src = event.target.result;
+                };
+                reader.onerror = reject;
+                reader.readAsDataURL(file);
+            });
+        }
+
+        async function ocrImage(image) {
+            log('Starting OCR process...');
+            const { data: { text } } = await Tesseract.recognize(
+                image,
+                'por+eng',
+                {
+                    logger: m => log(`${m.status} (${(m.progress * 100).toFixed(2)}%)`)
+                }
+            );
+            return text;
+        }
+
+        extractBtn.addEventListener('click', async () => {
+            const file = imageUpload.files[0];
+            if (!file) {
+                log('Please select an image file first.');
+                return;
+            }
+
+            try {
+                log('Step 1: Pre-processing image...');
+                const processedImageBlob = await preprocessImage(file);
+
+                log('Step 2: Performing OCR...');
+                rawText = await ocrImage(processedImageBlob);
+
+                log('OCR Result:\n' + rawText);
+
+                log('Step 3: Extracting data...');
+                const extractedData = extractData(rawText);
+                log('Extraction complete.');
+
+                // Populate the form with extracted data
+                for (const key in extractedData) {
+                    const input = document.getElementById(key);
+                    if (input) {
+                        input.value = extractedData[key] || '';
+                    }
+                }
+
+            } catch (error) {
+                log('An error occurred: ' + error.message);
+                console.error(error);
+            }
+        });
+
+        submitBtn.addEventListener('click', () => {
+            if (!db || !rawText) {
+                log('Please extract data from an image first.');
+                return;
+            }
+
+            const transaction = db.transaction(['extractions'], 'readwrite');
+            const store = transaction.objectStore('extractions');
+
+            const correctedData = {
+                fields: {},
+                raw_text: rawText,
+                timestamp: new Date().toISOString()
+            };
+
+            const form = document.getElementById('results-form');
+            const inputs = form.querySelectorAll('input');
+            inputs.forEach(input => {
+                correctedData.fields[input.name] = input.value;
+            });
+
+            const request = store.add(correctedData);
+
+            request.onsuccess = () => {
+                log('Training data saved successfully.');
+                // Now, send the data to Google Apps Script
+                submitToWebApp(correctedData);
+            };
+
+            request.onerror = (event) => {
+                log('Error saving training data: ' + event.target.errorCode);
+            };
+        });
+
+        async function submitToWebApp(data) {
+            if (!webAppUrl || webAppUrl === "https://script.google.com/macros/s/SEU_DEPLOY_ID/exec") {
+                log('Please configure the WEBAPP_URL in config.json');
+                return;
+            }
+
+            log('Submitting data to Google Apps Script...');
+            try {
+                const response = await fetch(webAppUrl, {
+                    method: 'POST',
+                    mode: 'no-cors', // See AGENTS.md, doPost will be public
+                    cache: 'no-cache',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(data)
+                });
+                log('Data submitted successfully.');
+            } catch (error) {
+                log('Error submitting data: ' + error.message);
+                console.error(error);
+            }
+        }
+
+        exportBtn.addEventListener('click', () => {
+            if (!db) {
+                log('Database not initialized.');
+                return;
+            }
+
+            const transaction = db.transaction(['extractions'], 'readonly');
+            const store = transaction.objectStore('extractions');
+            const request = store.getAll();
+
+            request.onsuccess = () => {
+                const data = request.result;
+                const json = JSON.stringify(data, null, 2);
+                const blob = new Blob([json], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'training_data.json';
+                a.click();
+                URL.revokeObjectURL(url);
+                log('Training data exported.');
+            };
+
+            request.onerror = (event) => {
+                log('Error exporting data: ' + event.target.errorCode);
+            };
+        });
+
+        importLabelBtn.addEventListener('click', () => {
+            importBtn.click();
+        });
+
+        importBtn.addEventListener('change', (event) => {
+            const file = event.target.files[0];
+            if (!file) {
+                return;
+            }
+
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                try {
+                    const data = JSON.parse(e.target.result);
+                    if (!Array.isArray(data)) {
+                        throw new Error('Invalid data format');
+                    }
+
+                    const transaction = db.transaction(['extractions'], 'readwrite');
+                    const store = transaction.objectStore('extractions');
+                    store.clear(); // Clear existing data
+
+                    data.forEach(item => {
+                        store.add(item);
+                    });
+
+                    log('Training data imported successfully.');
+                } catch (error) {
+                    log('Error importing data: ' + error.message);
+                }
+            };
+            reader.readAsText(file);
+        });
+
+        // Core extraction logic based on AGENTS.md
+        const aliases = {
+          REFERENCIA: ["referencia","referência","ref"],
+          DESTINO: ["destino","destination","to","porto","airport"],
+          DESTINO_FINAL: ["destino final","remoção","remocao","dta","remocçao"],
+          CONSIGNEE: ["consignee","cnee","cliente","destinatário","destinatario"],
+          MAWB: ["mawb","awb","master"],
+          HAWB: ["hawb","house","hwb"]
+        };
+
+        function norm(s){return s.normalize('NFKD').replace(/[\u0300-\u036f]/g,'').toLowerCase();}
+
+        function isIATA(tok){return /^[A-Z]{3}$/.test(tok);} // após toUpperCase()
+        function asMAWB(s){ const d = (s||'').replace(/[^0-9]/g,''); return d.length===11 ? d : null; }
+        function isHAWB(tok){ return /^[A-Z0-9][A-Z0-9\-/]{1,10}$/.test(tok); }
+        function isRefLike(tok){ return /^[A-Z0-9][A-Z0-9\-_/]{2,29}$/.test(tok); }
+
+        function tfidf(text, vocabulary, idf) {
+            const tf = new Array(Object.keys(vocabulary).length).fill(0);
+            const tokens = text.toLowerCase().match(/\b\w\w+\b/g) || [];
+
+            tokens.forEach(token => {
+                if (vocabulary[token]) {
+                    tf[vocabulary[token]]++;
+                }
+            });
+
+            const tfidf_vector = tf.map((value, index) => (value / tokens.length) * idf[index]);
+            return tfidf_vector;
+        }
+
+        function sigmoid(x) {
+            return 1 / (1 + Math.exp(-x));
+        }
+
+        function extractData(text){
+            const raw = text; const up = text.toUpperCase(); const low = norm(text);
+            const lines = raw.split(/\r?\n/);
+
+            const cand = {REFERENCIA:[], MAWB:[], HAWB:[], DESTINO:[], DESTINO_FINAL:[], CONSIGNEE:[]};
+
+            // 1) label-based
+            lines.forEach((line,i)=>{
+                const L = norm(line);
+                for(const key of Object.keys(aliases)){
+                    for(const al of aliases[key]){
+                        if(L.includes(norm(al))){ cand[key].push({i, line, via:'label', score:0.4}); break; }
+                    }
+                }
+            });
+
+            // 2) pattern-based scanning
+            lines.forEach((line,i)=>{
+                const U = line.toUpperCase();
+                // MAWB candidates
+                const ma = U.match(/[0-9][0-9 \.-]{9,20}[0-9]/g)||[];
+                ma.forEach(m=>{ const v=asMAWB(m); if(v) cand.MAWB.push({i, line:m, val:v, via:'pattern', score:0.3}); });
+
+                // HAWB/REF tokens
+                U.split(/\s+/).forEach(tok=>{
+                    const t = tok.replace(/[^A-Z0-9\-/]/g,'');
+                    if(isHAWB(t)) cand.HAWB.push({i, line:tok, val:t, via:'pattern', score:0.3});
+                    if(isRefLike(t)) cand.REFERENCIA.push({i, line:tok, val:t, via:'pattern', score:0.2});
+                    if(isIATA(t)) cand.DESTINO.push({i, line:tok, val:t, via:'pattern', score:0.3});
+                });
+            });
+
+            // 3) proximity boost (labels → nearest value)
+            const boostNear = (key, pred) => {
+                const labels = cand[key].filter(c=>c.via==='label');
+                labels.forEach(lbl=>{
+                    for(let j=lbl.i; j<Math.min(lbl.i+3, lines.length); j++){
+                        const U = lines[j].toUpperCase();
+                        const toks = U.split(/\s+/).map(t=>t.replace(/[^A-Z0-9\-/]/g,''));
+                        toks.forEach(t=>{ if(pred(t)) cand[key].push({i:j, line:t, val:t, via:'prox', score:0.2}); });
+                    }
+                });
+            };
+            boostNear('MAWB', t=>asMAWB(t));
+            boostNear('HAWB', isHAWB);
+            boostNear('REFERENCIA', isRefLike);
+            boostNear('DESTINO', t=>/^[A-Z]{3}$/.test(t));
+
+            // 4) scoring & selection
+            function pick(key, validate){
+                const arr = cand[key];
+
+                if (customModel && customModel[key]) {
+                    const model = customModel[key];
+                    lines.forEach((line, i) => {
+                        const vector = tfidf(line, model.vocabulary, model.idf);
+                        const score = vector.reduce((acc, val, j) => acc + val * model.coef[j], model.intercept[0]);
+                        const confidence = sigmoid(score);
+                        if (confidence > 0.5) {
+                            arr.push({i, line, via: 'model', score: confidence});
+                        }
+                    });
+                }
+
+                // agrupar por valor normalizado
+                const map = new Map();
+                arr.forEach(c=>{
+                    const v = (c.val || c.line || '').toString().toUpperCase();
+                    if(!v) return; const prev = map.get(v)||{score:0, best:c};
+                    map.set(v,{score:prev.score + c.score, best: prev.best});
+                });
+                let bestV=null, bestS=-1;
+                for(const [v, obj] of map){
+                    const ok = validate ? validate(v) : true;
+                    if(ok && obj.score>bestS){ bestS=obj.score; bestV=v; }
+                }
+                return bestV ? {value:bestV, confidence: Math.min(1, bestS)} : {value:null, confidence:0};
+            }
+
+            const out = {
+                REFERENCIA: pick('REFERENCIA', v=>isRefLike(v)).value,
+                MAWB: (()=>{ const p=pick('MAWB', v=>!!asMAWB(v)); return p.value? asMAWB(p.value):null; })(),
+                HAWB: pick('HAWB', isHAWB).value,
+                DESTINO: pick('DESTINO', v=>/^[A-Z]{3}$/.test(v)).value,
+                DESTINO_FINAL: pick('DESTINO_FINAL', v=>v.length>1).value, // heurística textual
+                CONSIGNEE: pick('CONSIGNEE', v=>v.length>=3).value,
+                raw_text: raw
+            };
+            return out;
+        }
+
+    </script>
+</body>
+</html>
