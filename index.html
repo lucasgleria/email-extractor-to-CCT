@@ -10,6 +10,43 @@
         .upload-section, .results-section, .actions-section { margin-bottom: 2em; }
         #results-form input { width: 100%; padding: 8px; margin-bottom: 10px; }
         #log { background-color: #f4f4f4; border: 1px solid #ddd; padding: 10px; height: 200px; overflow-y: scroll; }
+        button {
+            padding: 10px 20px;
+            margin: 5px;
+            font-size: 14px;
+            cursor: pointer;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            background-color: #f8f8f8;
+            transition: background-color 0.2s;
+        }
+        button:hover {
+            background-color: #e8e8e8;
+        }
+        #save-btn {
+            background-color: #4CAF50;
+            color: white;
+            border-color: #45a049;
+        }
+        #save-btn:hover {
+            background-color: #45a049;
+        }
+        #submit-btn {
+            background-color: #2196F3;
+            color: white;
+            border-color: #0b7dda;
+        }
+        #submit-btn:hover {
+            background-color: #0b7dda;
+        }
+        #extract-btn {
+            background-color: #ff9800;
+            color: white;
+            border-color: #e68900;
+        }
+        #extract-btn:hover {
+            background-color: #e68900;
+        }
     </style>
 </head>
 <body>
@@ -50,10 +87,13 @@
         <div class="actions-section">
             <h2>3. Actions</h2>
             <button id="extract-btn">Extract Data</button>
-            <button id="submit-btn">Confirm & Submit</button>
+            <button id="save-btn">Save to Training Data</button>
+            <button id="submit-btn">Save & Submit to Web App</button>
             <button id="export-btn">Export Training Data</button>
             <input type="file" id="import-btn" accept=".json" style="display:none">
             <button id="import-label-btn">Import Training Data</button>
+            <button id="delete-last-btn" style="background-color: #ff9800; color: white; border-color: #e68900;">Delete Last Entry</button>
+            <button id="clear-btn" style="background-color: #f44336; color: white; border-color: #da190b;">Clear All Training Data</button>
         </div>
 
         <div>
@@ -66,10 +106,13 @@
     <script>
         const imageUpload = document.getElementById('image-upload');
         const extractBtn = document.getElementById('extract-btn');
+        const saveBtn = document.getElementById('save-btn');
         const submitBtn = document.getElementById('submit-btn');
         const exportBtn = document.getElementById('export-btn');
         const importBtn = document.getElementById('import-btn');
         const importLabelBtn = document.getElementById('import-label-btn');
+        const deleteLastBtn = document.getElementById('delete-last-btn');
+        const clearBtn = document.getElementById('clear-btn');
         const logEl = document.getElementById('log');
         let db;
         let rawText;
@@ -220,47 +263,79 @@
             }
         });
 
-        submitBtn.addEventListener('click', () => {
+        // Function to collect form data
+        function collectFormData() {
+            const form = document.getElementById('results-form');
+            const inputs = form.querySelectorAll('input');
+            const fields = {};
+            inputs.forEach(input => {
+                fields[input.name] = input.value.trim();
+            });
+            return fields;
+        }
+
+        // Function to save data to IndexedDB
+        function saveToIndexedDB(sendToWebApp = false) {
             if (!db || !rawText) {
                 log('Please extract data from an image first.');
-                return;
+                return Promise.reject('No data to save');
             }
 
             const transaction = db.transaction(['extractions'], 'readwrite');
             const store = transaction.objectStore('extractions');
 
             const correctedData = {
-                fields: {},
+                fields: collectFormData(),
                 raw_text: rawText,
                 timestamp: new Date().toISOString()
             };
 
-            const form = document.getElementById('results-form');
-            const inputs = form.querySelectorAll('input');
-            inputs.forEach(input => {
-                correctedData.fields[input.name] = input.value;
+            return new Promise((resolve, reject) => {
+                const request = store.add(correctedData);
+
+                request.onsuccess = () => {
+                    log('✅ Training data saved successfully to local database.');
+                    if (sendToWebApp) {
+                        submitToWebApp(correctedData).then(resolve).catch(reject);
+                    } else {
+                        resolve(correctedData);
+                    }
+                };
+
+                request.onerror = (event) => {
+                    const error = 'Error saving training data: ' + event.target.errorCode;
+                    log('❌ ' + error);
+                    reject(error);
+                };
             });
+        }
 
-            const request = store.add(correctedData);
+        // Save button - only saves to IndexedDB
+        saveBtn.addEventListener('click', async () => {
+            try {
+                await saveToIndexedDB(false);
+            } catch (error) {
+                console.error('Save failed:', error);
+            }
+        });
 
-            request.onsuccess = () => {
-                log('Training data saved successfully.');
-                // Now, send the data to Google Apps Script
-                submitToWebApp(correctedData);
-            };
-
-            request.onerror = (event) => {
-                log('Error saving training data: ' + event.target.errorCode);
-            };
+        // Submit button - saves to IndexedDB AND sends to Web App
+        submitBtn.addEventListener('click', async () => {
+            try {
+                await saveToIndexedDB(true);
+            } catch (error) {
+                console.error('Submit failed:', error);
+            }
         });
 
         async function submitToWebApp(data) {
             if (!webAppUrl || webAppUrl === "https://script.google.com/macros/s/SEU_DEPLOY_ID/exec") {
-                log('Please configure the WEBAPP_URL in config.json');
-                return;
+                const error = 'Please configure the WEBAPP_URL in config.json';
+                log('⚠️ ' + error);
+                return Promise.reject(error);
             }
 
-            log('Submitting data to Google Apps Script...');
+            log('📤 Submitting data to Google Apps Script...');
             try {
                 const response = await fetch(webAppUrl, {
                     method: 'POST',
@@ -271,10 +346,13 @@
                     },
                     body: JSON.stringify(data)
                 });
-                log('Data submitted successfully.');
+                log('✅ Data submitted successfully to Web App.');
+                return Promise.resolve();
             } catch (error) {
-                log('Error submitting data: ' + error.message);
+                const errorMsg = 'Error submitting data: ' + error.message;
+                log('❌ ' + errorMsg);
                 console.error(error);
+                return Promise.reject(error);
             }
         }
 
@@ -338,6 +416,96 @@
                 }
             };
             reader.readAsText(file);
+        });
+
+        // Delete last entry button
+        deleteLastBtn.addEventListener('click', () => {
+            if (!db) {
+                log('Database not initialized.');
+                return;
+            }
+
+            const transaction = db.transaction(['extractions'], 'readwrite');
+            const store = transaction.objectStore('extractions');
+            
+            // Use cursor to get the last entry (highest key)
+            const request = store.openCursor(null, 'prev'); // 'prev' = reverse order
+
+            request.onsuccess = (event) => {
+                const cursor = event.target.result;
+                
+                if (!cursor) {
+                    log('⚠️ Não há dados para deletar.');
+                    return;
+                }
+
+                // This is the last entry (highest key)
+                const lastKey = cursor.primaryKey;
+                const lastEntry = cursor.value;
+
+                // Ask for confirmation with entry info
+                const entryInfo = lastEntry.timestamp 
+                    ? `\nÚltima entrada: ${new Date(lastEntry.timestamp).toLocaleString('pt-BR')}`
+                    : '';
+                
+                const confirmed = confirm(
+                    '⚠️ Isso irá apagar a ÚLTIMA inserção de dados de treinamento.' + entryInfo + '\n\n' +
+                    'Esta ação NÃO pode ser desfeita.\n\n' +
+                    'Deseja continuar?'
+                );
+
+                if (!confirmed) {
+                    log('Operação cancelada.');
+                    return;
+                }
+
+                // Delete the last entry
+                const deleteRequest = store.delete(lastKey);
+
+                deleteRequest.onsuccess = () => {
+                    log('✅ Última entrada deletada com sucesso.');
+                };
+
+                deleteRequest.onerror = (event) => {
+                    log('❌ Erro ao deletar última entrada: ' + event.target.errorCode);
+                };
+            };
+
+            request.onerror = (event) => {
+                log('❌ Erro ao acessar dados: ' + event.target.errorCode);
+            };
+        });
+
+        // Clear all training data button
+        clearBtn.addEventListener('click', () => {
+            if (!db) {
+                log('Database not initialized.');
+                return;
+            }
+
+            // Ask for confirmation
+            const confirmed = confirm(
+                '⚠️ ATENÇÃO: Isso irá apagar TODOS os dados de treinamento salvos localmente.\n\n' +
+                'Esta ação NÃO pode ser desfeita.\n\n' +
+                'Deseja continuar?'
+            );
+
+            if (!confirmed) {
+                log('Operação cancelada.');
+                return;
+            }
+
+            const transaction = db.transaction(['extractions'], 'readwrite');
+            const store = transaction.objectStore('extractions');
+            const request = store.clear();
+
+            request.onsuccess = () => {
+                log('✅ Todos os dados de treinamento foram apagados com sucesso.');
+            };
+
+            request.onerror = (event) => {
+                log('❌ Erro ao apagar dados: ' + event.target.errorCode);
+            };
         });
 
         // Core extraction logic based on AGENTS.md
